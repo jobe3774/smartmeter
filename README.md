@@ -42,12 +42,6 @@ $ python3 smartmeter.py --port=8080 --serialPort=/dev/ttyUSB0 --s0Pin=21
 ```
 To quit the application, press *Ctrl+C*.
 
-If you want to set the initial count of your S0 interface, you can use:
-
-```
-http://<IP-of-your-RPi>:8080/cmd?name=s0Interface.setValue&value=<initial count>
-```
-
 ## Output
 
 After starting the script, open your favourite browser and type:
@@ -97,6 +91,13 @@ You'll get a JSON response like this:
   }
 }
 
+```
+## Hints
+
+If you want to set the initial count of your S0 interface, you can use:
+
+```
+http://<IP-of-your-RPi>:8080/cmd?name=s0Interface.setValue&value=<initial count>
 ```
 
 ## License
