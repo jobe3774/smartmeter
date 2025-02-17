@@ -28,7 +28,7 @@ import serial
 import re
 from tzlocal import get_localzone
 from datetime import datetime, timedelta, time, timezone
-from raspend import RaspendApplication, ThreadHandlerBase
+from raspend import RaspendApplication, ThreadHandlerBase, ScheduleRepetitionType
 from collections import namedtuple
 
 class SmartMeterKeys:
@@ -122,6 +122,40 @@ class ReadSmartMeter(ThreadHandlerBase):
 
         return
 
+##################################################################################################
+
+class PowerImportPublisher(ThreadHandlerBase):
+    def __init__(self, powerImportLogFile):
+        self.powerImportLogFile = powerImportLogFile
+        return
+
+    def prepare(self):
+        # Create a csv file to store the peak values.
+        if not os.path.isfile(self.powerImportLogFile):
+            try:
+                csvFile = open(self.powerImportLogFile, "wt")
+                header = "Date,Time,PowerImport\n"
+                csvFile.write(header)
+                csvFile.close()
+            except IOError as e:
+                logging.error("Unable to open csv file '{}'! Error: {}".format(self.powerImportLogFile, e))
+
+    def invoke(self):
+        try:
+            tNow = datetime.now()
+            strLine = "{}-{:02d}-{:02d},{:02d}:{:02d},".format(tNow.year, tNow.month, tNow.day, tNow.hour, tNow.minute)
+            strLine += str(self.sharedDict["smartmeter_d0"]["POWER_IMPORT"]["value"]) + "\n"
+            csvFile = open(self.powerImportLogFile, "at")
+            csvFile.write(strLine)
+            csvFile.close()
+        except IOError as e:
+            logging.error("Unable to open csv file '{}'! Error: {}".format(self.powerImportLogFile, e))
+        except Exception as e:
+            logging.error("PowerImportPublisher.Invoke failed! Error: {}".format(e))
+        return
+
+##################################################################################################
+
 class S0InterfaceReader():
     """ This class counts the pulses of the Finder smart meter.
         On every rising edge detected, the GPIO interface invokes the ISR method below.
@@ -174,6 +208,7 @@ def main():
     cmdLineParser.add_argument("--port", help="The port number the server should listen on", type=int, required=True)
     cmdLineParser.add_argument("--serialPort", help="The serial port to read from", type=str, required=True)
     cmdLineParser.add_argument("--s0Pin", help="The BCM number of the pin connected to the S0 interface", type=int, required=False)
+    cmdLineParser.add_argument("--powerimportlog", help="Path to csv file receiving the power import values every 12 hours.", type=str, required=True)
 
     try: 
         args = cmdLineParser.parse_args()
@@ -184,6 +219,9 @@ def main():
         myApp = RaspendApplication(args.port)
 
         myApp.createWorkerThread(ReadSmartMeter("smartmeter_d0", args.serialPort, localTimeZone), 5)
+
+        # Write power import values to csv file every 12 hours starting at 6pm
+        myApp.createScheduledWorkerThread(PowerImportPublisher(args.powerimportlog), time(18, 0), None, ScheduleRepetitionType.HOURLY, 12)
 
         s0Interface = S0InterfaceReader("smartmeter_s0", myApp.getSharedDict(), myApp.getAccessLock())
 
