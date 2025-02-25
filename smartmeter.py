@@ -30,6 +30,8 @@ from tzlocal import get_localzone
 from datetime import datetime, timedelta, time, timezone
 from raspend import RaspendApplication, ThreadHandlerBase, ScheduleRepetitionType
 from collections import namedtuple
+import influxdb_client
+from influxdb_client.client.write_api import SYNCHRONOUS
 
 class SmartMeterKeys:
     """ OBIS codes of the EBZ DD3.
@@ -124,34 +126,25 @@ class ReadSmartMeter(ThreadHandlerBase):
 
 ##################################################################################################
 
-class PowerImportPublisher(ThreadHandlerBase):
-    def __init__(self, powerImportLogFile):
-        self.powerImportLogFile = powerImportLogFile
+class PushPowerDataToInfluxDB(ThreadHandlerBase):
+    def __init__(self, influx_org, influx_bucket, influx_token, influx_url):
+        self.org = influx_org
+        self.bucket = influx_bucket
+        self.token = influx_token
+        self.url = influx_url
         return
 
     def prepare(self):
-        # Create a csv file to store the peak values.
-        if not os.path.isfile(self.powerImportLogFile):
-            try:
-                csvFile = open(self.powerImportLogFile, "wt")
-                header = "Date,Time,PowerImport\n"
-                csvFile.write(header)
-                csvFile.close()
-            except IOError as e:
-                logging.error("Unable to open csv file '{}'! Error: {}".format(self.powerImportLogFile, e))
+        self.client = influxdb_client.InfluxDBClient(url=self.url, token=self.token, org=self.org)
+        self.write_api = self.client.write_api(write_options=SYNCHRONOUS)
+        return
 
     def invoke(self):
-        try:
-            tNow = datetime.now()
-            strLine = "{}-{:02d}-{:02d},{:02d}:{:02d},".format(tNow.year, tNow.month, tNow.day, tNow.hour, tNow.minute)
-            strLine += str(self.sharedDict["smartmeter_d0"]["POWER_IMPORT"]["value"]) + "\n"
-            csvFile = open(self.powerImportLogFile, "at")
-            csvFile.write(strLine)
-            csvFile.close()
-        except IOError as e:
-            logging.error("Unable to open csv file '{}'! Error: {}".format(self.powerImportLogFile, e))
-        except Exception as e:
-            logging.error("PowerImportPublisher.Invoke failed! Error: {}".format(e))
+        powerImport = influxdb_client.Point("power").field("import", self.sharedDict["smartmeter_d0"]["POWER_IMPORT"]["value"])
+        powerExport = influxdb_client.Point("power").field("export", self.sharedDict["smartmeter_d0"]["POWER_EXPORT"]["value"])
+        heatPump = influxdb_client.Point("power").field("heatpump", self.sharedDict["smartmeter_s0"]["count"])
+
+        self.write_api.write(bucket=bucket, org=org, record=[powpowerImport, powerExport, heatPump])
         return
 
 ##################################################################################################
@@ -196,6 +189,9 @@ class S0InterfaceReader():
         finally:
             self.accessLock.release()
 
+def useInflux(args):
+    return (args.influx_org is not None and args.influx_bucket is not None and args.influx_token is not None and args.influx_url is not None)
+
 def main():
     localTimeZone = get_localzone()
 
@@ -205,10 +201,15 @@ def main():
 
     # Check commandline arguments.
     cmdLineParser = argparse.ArgumentParser(prog="smartmeter", usage="%(prog)s [options]")
-    cmdLineParser.add_argument("--port", help="The port number the server should listen on", type=int, required=True)
-    cmdLineParser.add_argument("--serialPort", help="The serial port to read from", type=str, required=True)
-    cmdLineParser.add_argument("--s0Pin", help="The BCM number of the pin connected to the S0 interface", type=int, required=False)
-    cmdLineParser.add_argument("--powerimportlog", help="Path to csv file receiving the power import values every 12 hours.", type=str, required=True)
+    cmdLineParser.add_argument("--port", help="The port number the server should listen on.", type=int, required=True)
+    cmdLineParser.add_argument("--serialPort", help="The serial port to read from.", type=str, required=True)
+    cmdLineParser.add_argument("--s0Pin", help="The BCM number of the pin connected to the S0 interface.", type=int, required=False)
+
+    # Required parameters for publishing power data to an Influx database.
+    cmdLineParser.add_argument("--influx_org", help="InfluxDB org to use.", type=str, required=False)
+    cmdLineParser.add_argument("--influx_bucket", help="InfluxDB bucket to use.", type=str, required=False)
+    cmdLineParser.add_argument("--influx_token", help="InfluxDB access token.", type=str, required=False)
+    cmdLineParser.add_argument("--influx_url", help="InfluxDB url.", type=str, required=False)
 
     try: 
         args = cmdLineParser.parse_args()
@@ -220,8 +221,9 @@ def main():
 
         myApp.createWorkerThread(ReadSmartMeter("smartmeter_d0", args.serialPort, localTimeZone), 5)
 
-        # Write power import values to csv file every 12 hours starting at 6pm
-        myApp.createScheduledWorkerThread(PowerImportPublisher(args.powerimportlog), time(18, 0), None, ScheduleRepetitionType.HOURLY, 12)
+        # Check if we push power data to an influxdb.
+        if useInflux(args):
+            myApp.createWorkerThread(PushPowerDataToInfluxDB(args.influx_org, args.influx_bucket, args.influx_token, args.influx_url), 60)
 
         s0Interface = S0InterfaceReader("smartmeter_s0", myApp.getSharedDict(), myApp.getAccessLock())
 
