@@ -144,7 +144,7 @@ class PushPowerDataToInfluxDB(ThreadHandlerBase):
         powerExport = influxdb_client.Point("power").field("export", self.sharedDict["smartmeter_d0"]["POWER_EXPORT"]["value"])
         heatPump = influxdb_client.Point("power").field("heatpump", self.sharedDict["smartmeter_s0"]["count"])
 
-        self.write_api.write(bucket=bucket, org=org, record=[powpowerImport, powerExport, heatPump])
+        self.write_api.write(bucket=self.bucket, org=self.org, record=[powerImport, powerExport, heatPump])
         return
 
 ##################################################################################################
