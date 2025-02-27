@@ -132,19 +132,46 @@ class PushPowerDataToInfluxDB(ThreadHandlerBase):
         self.bucket = influx_bucket
         self.token = influx_token
         self.url = influx_url
+        self.prevTotalImport = 0
+        self.prevTotalHeatpump = 0
+        self.minutesLogged = 0
         return
 
     def prepare(self):
-        self.client = influxdb_client.InfluxDBClient(url=self.url, token=self.token, org=self.org)
-        self.write_api = self.client.write_api(write_options=SYNCHRONOUS)
+        self.prevTotalImport = self.sharedDict["smartmeter_d0"]["POWER_IMPORT"]["value"]
+        self.prevTotalHeatpump = self.sharedDict["smartmeter_s0"]["count"]
         return
 
     def invoke(self):
-        powerImport = influxdb_client.Point("power").field("import", self.sharedDict["smartmeter_d0"]["POWER_IMPORT"]["value"])
-        powerExport = influxdb_client.Point("power").field("export", self.sharedDict["smartmeter_d0"]["POWER_EXPORT"]["value"])
-        heatPump = influxdb_client.Point("power").field("heatpump", self.sharedDict["smartmeter_s0"]["count"])
+        try:
+            client = influxdb_client.InfluxDBClient(url=self.url, token=self.token, org=self.org)
+            write_api = client.write_api(write_options=SYNCHRONOUS)
 
-        self.write_api.write(bucket=self.bucket, org=self.org, record=[powerImport, powerExport, heatPump])
+            powerTotalImport = influxdb_client.Point("power").field("total_import", self.sharedDict["smartmeter_d0"]["POWER_IMPORT"]["value"])
+            powerCurrentImport = influxdb_client.Point("power").field("current_import", self.sharedDict["smartmeter_d0"]["CURRENT_POWER_SUM"]["value"])
+            powerExport = influxdb_client.Point("power").field("total_export", self.sharedDict["smartmeter_d0"]["POWER_EXPORT"]["value"])
+            heatPump = influxdb_client.Point("power").field("heatpump", self.sharedDict["smartmeter_s0"]["count"])
+
+            write_api.write(bucket=self.bucket, org=self.org, record=[powerTotalImport, powerCurrentImport, powerExport, heatPump])
+
+            self.minutesLogged = self.minutesLogged + 1
+
+            # Thread triggers every minute. Log the kWh every hour.
+            if self.minutesLogged == 60:
+                totalImportPerHour = self.sharedDict["smartmeter_d0"]["POWER_IMPORT"]["value"] - self.prevTotalImport
+                totalHeatpumpPerHour = self.sharedDict["smartmeter_s0"]["count"] - self.prevTotalHeatpump
+
+                powerTotalImportPerHour = influxdb_client.Point("power").field("total_import_per_hour", totalImportPerHour)
+                heatPumpTotalPerHour = influxdb_client.Point("power").field("heatpump_total_per_hour", totalHeatpumpPerHour)
+
+                write_api.write(bucket=self.bucket, org=self.org, record=[powerTotalImportPerHour, heatPumpTotalPerHour])
+
+                self.prevTotalImport = self.sharedDict["smartmeter_d0"]["POWER_IMPORT"]["value"]
+                self.prevTotalHeatpump = self.sharedDict["smartmeter_s0"]["count"]
+                self.minutesLogged = 0
+            
+        except Exception as e:
+            logging.error("PushPowerDataToInfluxDB failed. Err: {}".format(e))
         return
 
 ##################################################################################################
